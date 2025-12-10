@@ -3,7 +3,7 @@
  * Plugin Name: Menu Dnia Restauracji
  * Plugin URI: https://twoja-restauracja.pl
  * Description: Prosty system zarządzania daniami dnia w restauracji
- * Version: 1.0.6
+ * Version: 1.1.0
  * Author: Twoja Restauracja
  * Text Domain: menu-dnia
  */
@@ -14,7 +14,7 @@ if (!defined('ABSPATH')) {
 }
 
 // Stałe wtyczki
-define('MDR_VERSION', '1.0.6');
+define('MDR_VERSION', '1.1.0');
 define('MDR_PLUGIN_DIR', plugin_dir_path(__FILE__));
 define('MDR_PLUGIN_URL', plugin_dir_url(__FILE__));
 
@@ -34,6 +34,8 @@ function mdr_create_database_tables() {
         nazwa_dania varchar(255) NOT NULL,
         opis text,
         cena decimal(10,2) NOT NULL,
+        gramy decimal(8,2) DEFAULT NULL,
+        alergeny text,
         kategoria varchar(100) DEFAULT 'inne',
         dzien_tygodnia varchar(20),
         jest_daniem_dnia tinyint(1) DEFAULT 0,
@@ -112,9 +114,15 @@ function mdr_check_database_tables() {
     $table1_exists = $wpdb->get_var("SHOW TABLES LIKE '$table_name'") == $table_name;
     $table2_exists = $wpdb->get_var("SHOW TABLES LIKE '$table_excluded'") == $table_excluded;
     $table3_exists = $wpdb->get_var("SHOW TABLES LIKE '$table_categories'") == $table_categories;
-    
+
     // Jeśli któraś tabela nie istnieje, utwórz je
     if (!$table1_exists || !$table2_exists || !$table3_exists) {
+        mdr_create_database_tables();
+    }
+
+    // Aktualizacja schematu, gdy zmienia się wersja bazy danych
+    $db_version = get_option('mdr_db_version');
+    if ($db_version !== MDR_VERSION) {
         mdr_create_database_tables();
     }
     
@@ -1085,6 +1093,8 @@ function mdr_admin_page() {
                         <th style="width: 50px;">ID</th>
                         <th>Nazwa Dania</th>
                         <th>Opis</th>
+                        <th style="width: 120px;">Waga (g)</th>
+                        <th style="width: 180px;">Alergeny</th>
                         <th style="width: 100px;">Cena</th>
                         <th style="width: 100px; text-align: center;">
                             <span title="Czy danie jest daniem dnia?">Danie Dnia</span>
@@ -1102,6 +1112,8 @@ function mdr_admin_page() {
                         <td><?php echo $danie->id; ?></td>
                         <td><strong><?php echo esc_html($danie->nazwa_dania); ?></strong></td>
                         <td><?php echo esc_html($danie->opis); ?></td>
+                        <td><?php echo $danie->gramy ? number_format($danie->gramy, 0) . ' g' : '—'; ?></td>
+                        <td><?php echo $danie->alergeny ? esc_html($danie->alergeny) : '—'; ?></td>
                         <td><?php echo number_format($danie->cena, 2); ?> zł</td>
                         <td style="text-align: center;">
                             <?php if ($danie->jest_daniem_dnia): ?>
@@ -1315,15 +1327,20 @@ function mdr_add_dish_page() {
     
     // Obsługa formularza
     if (isset($_POST['submit']) && check_admin_referer('mdr_save_dish', 'mdr_nonce_save')) {
+        $gramy = isset($_POST['gramy']) && $_POST['gramy'] !== '' ? floatval($_POST['gramy']) : null;
+        $alergeny = isset($_POST['alergeny']) ? sanitize_textarea_field($_POST['alergeny']) : '';
+
         $data = array(
             'nazwa_dania' => sanitize_text_field($_POST['nazwa_dania']),
             'opis' => sanitize_textarea_field($_POST['opis']),
             'cena' => floatval($_POST['cena']),
+            'gramy' => $gramy,
+            'alergeny' => $alergeny,
             'kategoria' => sanitize_text_field($_POST['kategoria']),
             'aktywne' => isset($_POST['aktywne']) ? 1 : 0
         );
-        
-        $format = array('%s', '%s', '%f', '%s', '%d');
+
+        $format = array('%s', '%s', '%f', '%f', '%s', '%s', '%d');
         
         if ($edit_mode && isset($_GET['edit'])) {
             $result = $wpdb->update($table_name, $data, array('id' => intval($_GET['edit'])), $format, array('%d'));
@@ -1363,6 +1380,21 @@ function mdr_add_dish_page() {
                     <td>
                         <textarea name="opis" id="opis" rows="4" cols="50" class="large-text"><?php echo $edit_mode ? esc_textarea($danie->opis) : ''; ?></textarea>
                         <p class="description">Krótki opis dania, składniki (opcjonalnie)</p>
+                    </td>
+                </tr>
+                <tr>
+                    <th><label for="gramy">Waga (g)</label></th>
+                    <td>
+                        <input type="number" name="gramy" id="gramy" step="1" min="0"
+                               value="<?php echo ($edit_mode && $danie->gramy !== null) ? esc_attr($danie->gramy) : ''; ?>">
+                        <p class="description">Podaj wagę porcji w gramach (opcjonalnie)</p>
+                    </td>
+                </tr>
+                <tr>
+                    <th><label for="alergeny">Alergeny</label></th>
+                    <td>
+                        <textarea name="alergeny" id="alergeny" rows="3" cols="50" class="large-text"><?php echo $edit_mode ? esc_textarea($danie->alergeny) : ''; ?></textarea>
+                        <p class="description">Wypisz alergeny obecne w daniu (np. gluten, orzechy)</p>
                     </td>
                 </tr>
                 <tr>
@@ -1545,6 +1577,20 @@ function mdr_display_menu($atts) {
                 font-size: 14px;
                 opacity: 0.8;
             }
+            .mdr-danie-meta {
+                margin-top: 6px;
+                color: var(--theme-text-color, #666);
+                font-size: 13px;
+                opacity: 0.9;
+                display: flex;
+                flex-wrap: wrap;
+                gap: 8px;
+            }
+            .mdr-danie-meta .mdr-meta-item {
+                background: var(--theme-palette-color-8, var(--paletteColor8, #f1f1f1));
+                padding: 4px 8px;
+                border-radius: 4px;
+            }
             .mdr-danie-cena {
                 font-size: 20px;
                 font-weight: bold;
@@ -1561,6 +1607,16 @@ function mdr_display_menu($atts) {
             <div class="nazwa"><?php echo esc_html($danie_dnia->nazwa_dania); ?></div>
             <?php if ($danie_dnia->opis): ?>
                 <div class="opis"><?php echo esc_html($danie_dnia->opis); ?></div>
+            <?php endif; ?>
+            <?php if ($danie_dnia->gramy || $danie_dnia->alergeny): ?>
+                <div class="mdr-danie-meta">
+                    <?php if ($danie_dnia->gramy): ?>
+                        <span class="mdr-meta-item"><?php echo number_format($danie_dnia->gramy, 0); ?> g</span>
+                    <?php endif; ?>
+                    <?php if ($danie_dnia->alergeny): ?>
+                        <span class="mdr-meta-item">Alergeny: <?php echo esc_html($danie_dnia->alergeny); ?></span>
+                    <?php endif; ?>
+                </div>
             <?php endif; ?>
             <div class="cena"><?php echo number_format($danie_dnia->cena, 2); ?> zł</div>
         </div>
@@ -1587,14 +1643,24 @@ function mdr_display_menu($atts) {
             <?php foreach ($dania_kategorii as $danie): ?>
                 <?php if ($danie_dnia && $danie->id == $danie_dnia->id) continue; ?>
                 <div class="mdr-danie">
-                    <div class="mdr-danie-info">
-                        <div class="mdr-danie-nazwa"><?php echo esc_html($danie->nazwa_dania); ?></div>
-                        <?php if ($danie->opis): ?>
-                            <div class="mdr-danie-opis"><?php echo esc_html($danie->opis); ?></div>
-                        <?php endif; ?>
+                        <div class="mdr-danie-info">
+                            <div class="mdr-danie-nazwa"><?php echo esc_html($danie->nazwa_dania); ?></div>
+                            <?php if ($danie->opis): ?>
+                                <div class="mdr-danie-opis"><?php echo esc_html($danie->opis); ?></div>
+                            <?php endif; ?>
+                            <?php if ($danie->gramy || $danie->alergeny): ?>
+                                <div class="mdr-danie-meta">
+                                    <?php if ($danie->gramy): ?>
+                                        <span class="mdr-meta-item"><?php echo number_format($danie->gramy, 0); ?> g</span>
+                                    <?php endif; ?>
+                                    <?php if ($danie->alergeny): ?>
+                                        <span class="mdr-meta-item">Alergeny: <?php echo esc_html($danie->alergeny); ?></span>
+                                    <?php endif; ?>
+                                </div>
+                            <?php endif; ?>
+                        </div>
+                        <div class="mdr-danie-cena"><?php echo number_format($danie->cena, 2); ?> zł</div>
                     </div>
-                    <div class="mdr-danie-cena"><?php echo number_format($danie->cena, 2); ?> zł</div>
-                </div>
             <?php endforeach; ?>
         </div>
         <?php endforeach; ?>
@@ -1664,6 +1730,19 @@ function mdr_display_danie_dnia($atts) {
                 margin: 10px 0;
                 opacity: 0.95;
             }
+            .mdr-danie-meta {
+                margin: 12px 0 6px;
+                display: flex;
+                flex-wrap: wrap;
+                gap: 8px;
+                justify-content: center;
+            }
+            .mdr-danie-meta .mdr-meta-item {
+                background: rgba(255, 255, 255, 0.12);
+                padding: 6px 10px;
+                border-radius: 4px;
+                color: var(--theme-palette-color-8, var(--paletteColor8, #fff));
+            }
             .mdr-danie-dnia-widget .cena {
                 font-size: 28px;
                 font-weight: bold;
@@ -1677,6 +1756,16 @@ function mdr_display_danie_dnia($atts) {
         <div class="nazwa"><?php echo esc_html($danie_dnia->nazwa_dania); ?></div>
         <?php if ($danie_dnia->opis): ?>
             <div class="opis"><?php echo esc_html($danie_dnia->opis); ?></div>
+        <?php endif; ?>
+        <?php if ($danie_dnia->gramy || $danie_dnia->alergeny): ?>
+            <div class="mdr-danie-meta">
+                <?php if ($danie_dnia->gramy): ?>
+                    <span class="mdr-meta-item"><?php echo number_format($danie_dnia->gramy, 0); ?> g</span>
+                <?php endif; ?>
+                <?php if ($danie_dnia->alergeny): ?>
+                    <span class="mdr-meta-item">Alergeny: <?php echo esc_html($danie_dnia->alergeny); ?></span>
+                <?php endif; ?>
+            </div>
         <?php endif; ?>
         <div class="cena"><?php echo number_format($danie_dnia->cena, 2); ?> zł</div>
     </div>
