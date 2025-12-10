@@ -120,6 +120,15 @@ function mdr_check_database_tables() {
         mdr_create_database_tables();
     }
 
+    // Upewnij się, że kolumna "gramy" istnieje w tabeli menu_dnia
+    if ($table1_exists) {
+        $gramy_column = $wpdb->get_row($wpdb->prepare("SHOW COLUMNS FROM {$table_name} LIKE %s", 'gramy'));
+
+        if (!$gramy_column) {
+            $wpdb->query("ALTER TABLE {$table_name} ADD COLUMN gramy decimal(8,2) DEFAULT NULL AFTER cena");
+        }
+    }
+
     // Aktualizacja schematu, gdy zmienia się wersja bazy danych
     $db_version = get_option('mdr_db_version');
     if ($db_version !== MDR_VERSION) {
